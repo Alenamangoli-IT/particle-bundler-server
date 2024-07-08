@@ -2,24 +2,35 @@ import { BigNumberish, Contract, Interface, JsonRpcProvider, Wallet, getAddress,
 import { calcPreVerificationGas } from '@account-abstraction/sdk';
 import { arrayify } from '@ethersproject/bytes';
 import { IContractAccount } from './interface-contract-account';
-import entryPointAbi from '../../src/modules/rpc/aa/abis/entry-point-abi';
+import  entryPointAbiV6  from '../../src/modules/rpc/aa/abis/entry-point-abi';
+import  entryPointAbiV7  from '../../src/modules/rpc/aa/abis/v7/entry-point-abi';
 import { hexConcat } from '@ethersproject/bytes';
+import { packUserOp } from '../../src/modules/rpc/aa/v07/packed-user-operation';
 
 const FACTORY_ADDRESS = '0x9406cc6185a346906296840746125a0e44976454';
 const ENTRY_POINT = '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789';
 
+const FACTORY_ADDRESS_V2 = '0xDeCb4780F435bb1194835E15CC964b1d9C8C79f2';
+const ENTRY_POINT_V2 = '0x0000000071727De22E5E9d8BAf0edAc6f37da032';
+
+export enum SimpleSmartAccountVersion {
+    V1 = 'v1',
+    V2 = 'v2'
+}
 export class SimpleSmartAccount implements IContractAccount {
     private accountAddress: string;
     private simpleAccountContract: Contract;
     private readonly provider: JsonRpcProvider;
     private readonly epContract: Contract;
     private readonly simpleAccountFactoryContract: Contract;
-    private readonly entryPointAddress: string = ENTRY_POINT;
+    private readonly entryPointAddress: string;
 
-    public constructor(private readonly owner: Wallet) {
+    public constructor(private readonly owner: Wallet, private readonly version = SimpleSmartAccountVersion.V1) {
         this.provider = owner.provider as JsonRpcProvider;
-        this.epContract = new Contract(this.entryPointAddress, entryPointAbi, owner);
-        this.simpleAccountFactoryContract = new Contract(FACTORY_ADDRESS, factoryAbi, owner);
+        const [factoryAddress, entryPointAddress, entrypointAbi] = this.version === SimpleSmartAccountVersion.V1 ? [FACTORY_ADDRESS, ENTRY_POINT, entryPointAbiV6] : [FACTORY_ADDRESS_V2, ENTRY_POINT_V2, entryPointAbiV7];
+        this.entryPointAddress = entryPointAddress;
+        this.epContract = new Contract(this.entryPointAddress, entrypointAbi, owner);
+        this.simpleAccountFactoryContract = new Contract(factoryAddress, factoryAbi, owner);
     }
 
     public async getAccountAddress(): Promise<string> {
@@ -75,12 +86,13 @@ export class SimpleSmartAccount implements IContractAccount {
         if (detailsForUserOp.length !== 1) {
             const targets = [];
             const datas = [];
+            const values = [];
             for (const detailForUserOp of detailsForUserOp) {
                 targets.push(detailForUserOp.to);
                 datas.push(detailForUserOp.data);
+                values.push(detailForUserOp.value);
             }
-
-            callData = await this.encodeExecuteBatch(targets, datas);
+            callData = await this.encodeExecuteBatch(targets, datas, values);
         } else {
             callData = await this.encodeExecute(detailsForUserOp[0].to, toBeHex(detailsForUserOp[0].value ?? 0), detailsForUserOp[0].data);
         }
@@ -106,9 +118,14 @@ export class SimpleSmartAccount implements IContractAccount {
         return (await simpleAccount.execute.populateTransaction(target, value, data)).data;
     }
 
-    public async encodeExecuteBatch(targets: string[], datas: string[]): Promise<string> {
+    public async encodeExecuteBatch(targets: string[], datas: string[], values: string[]): Promise<string> {
         const simpleAccount = await this.getSimpleAccountContract();
-        return (await simpleAccount.executeBatch.populateTransaction(targets, datas)).data;
+        if (this.version == SimpleSmartAccountVersion.V1) {
+            return (await simpleAccount.executeBatch.populateTransaction(targets, datas)).data;
+        } else {
+            return (await simpleAccount.executeBatch.populateTransaction(targets, values, datas)).data;
+        }
+
     }
 
     public async createInitCode(index = 0): Promise<string> {
@@ -159,7 +176,8 @@ export class SimpleSmartAccount implements IContractAccount {
     }
 
     public async getUserOpHash(userOp: any) {
-        return await this.epContract.getUserOpHash(userOp);
+        const data = this.version == SimpleSmartAccountVersion.V1 ? userOp : packUserOp(userOp);
+        return await this.epContract.getUserOpHash(data);
     }
 }
 

@@ -217,3 +217,7 @@ export function canRunCron() {
 
     return process.env.NODE_APP_INSTANCE === '0' && Os.hostname() === PRODUCTION_HOSTNAME;
 }
+
+export function packUint(high128: BigNumberish, low128: BigNumberish): string {
+    return toBeHex(BigInt(high128) << 128n | BigInt(low128), 32)
+}
